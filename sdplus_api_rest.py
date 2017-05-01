@@ -1,11 +1,14 @@
+import datetime
 import json
-import os
 import requests
 import xmltodict
 import xml.etree.ElementTree as ET
-__version__ = 0.3
+import urllib.parse
+__version__ = '1.1'
 # 0.2 moves create_xml to internal method
 # 0.3 implements xmltodict and json for more complex returned xml
+# 1.0 Add class methods, matching the API
+# 1.1 updated technician_get_all
 
 
 class API:
@@ -14,6 +17,11 @@ class API:
     # https://www.manageengine.com/products/service-desk/help/adminguide/api/request-operations.html
     """
     def __init__(self, api_key, api_url_base):
+        """
+        Initiate values
+        :param api_key: technician key
+        :param api_url_base: should be base of sdplus api e.g. http://sdplus/sdpapi/
+        """
         self.api_key = api_key
         self.api_url_base = api_url_base
 
@@ -46,7 +54,10 @@ class API:
         :return: list: [{'key': 'value'}, {'key': 'value'}, ...
         """
         all_params = []
-        records = response['API']['response']['operation']['Details']['record']
+        try:
+            records = response['API']['response']['operation']['Details']['record']
+        except KeyError:
+            return []
         if isinstance(records, dict):  # 1 record
             parameters_dict = {}
             for param in records['parameter']:
@@ -79,9 +90,9 @@ class API:
             params.update({'INPUT_DATA': xml_input})
         if attachment:
             file = {'file': open(attachment, 'rb')}
-            response_text = requests.post(os.path.join(self.api_url_base, url_append), params=params, files=file).text
+            response_text = requests.post(urllib.parse.urljoin(self.api_url_base, url_append), params=params, files=file).text
         else:
-            response_text = requests.get(os.path.join(self.api_url_base, url_append), params).text
+            response_text = requests.get(urllib.parse.urljoin(self.api_url_base, url_append), params).text
         if bypass:  # needed when xml response is more complex
             return json.loads(json.dumps(xmltodict.parse(response_text)))
         response = ET.fromstring(response_text)
@@ -100,219 +111,165 @@ class API:
                                         if details_params is not None]))
         return result
 
+    # Request Operations
+    def request_add(self, fields):
+        return self.send('request/', 'ADD_REQUEST', fields)
 
-def eg_add_request():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {
-        'reqtemplate': 'Default Request',  # or 'General IT Request' which has supplier ref, but also Due by Date,
-        'requesttype': 'Service Request',
-        'status': 'Hold - Awaiting Third Party',
-        'requester': 'Simon Crouch',
-        'mode': '@Southmead Retained Estate',  # site
-        'best contact number': '-',
-        'Exact Location': 'white room',
-        'group': 'Back Office',
-        'subject': 'This is a test call only - please ignore',
-        'description': 'This is a test call only (description) - please ignore',
-        'service': '.Lorenzo/Galaxy - IT Templates',    # Service Category
-        'category': 'Clinical Applications Incident',  # Self Service Incident
-        'subcategory': 'Lorenzo',
-        'impact': '3 Impacts Department',
-        'urgency': '3 Business Operations Slightly Affected - Requires response within 8 hours of created time'
-    }
-    result = api.send('', 'ADD_REQUEST', fields)
-    print(result)
+    def request_edit(self, request_id, fields):
+        return self.send('request/' + request_id, 'EDIT_REQUEST', fields)
 
+    def request_view(self, request_id):
+        return self.send('request/' + request_id, 'GET_REQUEST')
 
-def eg_edit_request():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'subject': 'EDITED EDITED ignore this request'}
-    result = api.send('154820', 'EDIT_REQUEST', fields)
-    print(result)
+    def request_delete(self, request_id):
+        return self.send('request/' + request_id, 'DELETE_REQUEST')
 
+    def request_close(self, request_id, accepted=False, comment=''):
+        """
+        Closes request. ***NOTE: You can't use this unless call has been assigned***
+        :param request_id: id of request
+        :param accepted: 'Accepted' or ''
+        :param comment: Comment to put in the closure comments box
+        :return: response
+        """
+        if accepted:
+            accepted_text = 'Accepted'
+        else:
+            accepted_text = ''
+        fields = {'closeAccepted': accepted_text, 'closeComment': comment}
+        return self.send('request/' + request_id, 'CLOSE_REQUEST', fields)
 
-def eg_view_request():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('154594', 'GET_REQUEST')
-    print(result)
+    def request_get_conversations(self, request_id):
+        result = self.send('request/' + request_id + '/conversation', 'GET_CONVERSATIONS', bypass=True)
+        return self.output_params_to_list(result)
 
+    def request_get_conversation(self, request_id, conversation_id):
+        result = self.send('request/' + request_id + '/conversation/' + conversation_id, 'GET_CONVERSATION', bypass=True)
+        return self.output_params_to_list(result)
 
-def eg_delete_request():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('154820', 'DELETE_REQUEST')
-    print(result)
+    def request_add_attachment(self, request_id, attachment_path):
+        return self.send('request/' + request_id + '/attachment', 'ADD_ATTACHMENT', attachment=attachment_path)
 
+    def request_adding_resolution(self, request_id, text=''):
+        return self.send('request/' + request_id + '/resolution', 'ADD_RESOLUTION', {'resolutiontext': text}, sub_elements='resolution')
 
-# eg_close_request
+    def request_editing_resolution(self, request_id, text=''):
+        return self.send('request/' + request_id + '/resolution', 'EDIT_RESOLUTION', {'resolutiontext': text}, sub_elements='resolution')
 
+    def request_get_resolution(self, request_id):
+        return self.send('request/' + request_id, 'GET_RESOLUTION', bypass=True)
 
-def eg_get_conversations():
-    """
-    Gets ONLY incoming conversations (incoming emails usually)
-    :return: e.g. [{'createdtime': '1472553622289', 'TYPE': None, 'conversationid': '573946', 'from': 'IT Third Party...
+    def request_pickup(self, request_id):
+        return self.send('request/' + request_id, 'PICKUP_REQUEST')
 
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('196392/conversation', 'GET_CONVERSATIONS', bypass=True)
-    print(api.output_params_to_list(result))
+    def request_assign(self, request_id, technician_id):
+        return self.send('request/' + request_id, 'ASSIGN_REQUEST', {'technicianid': technician_id})
 
+    def request_reply(self, request_id, fields):
+        # fields: {'to': 'simon.crouch@nbt.nhs.uk', 'cc': 'simoncrouch@nhs.net', 'subject': 'subj test', 'description':
+        return self.send('request/' + request_id, 'REPLY_REQUEST', fields, bypass=True)
 
-def eg_get_conversation():
-    """
-    Gets the conversation item contents (usually incoming email) from sdplus ref and conversation id
-    :return: e.g. [{'conversationid': '573946', 'title': 'FW: Helpdesk case HD0000001088813  ...
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('196392/conversation/573946', 'GET_CONVERSATION', bypass=True)
-    # print(result)
-    print(api.output_params_to_list(result))
+    # "Operation ADD_CONVERSATION is not supported."
+    # def request_add_conversation(self, request_id, subject='', description=''):
+    #     return self.send('request/' + request_id, 'ADD_CONVERSATION', {'subject': subject, 'description': description},
+    #                      bypass=True)
 
+    def request_get_requests(self, filter_by='All_Requests', limit='1000', frm='0'):
+        """
+        Get all call details from sdplus - works by returning MOST RECENT calls first
+        Will translate epoch createdtime to datetime object
+        :param filter_by: Queue name (not value) to search - seems to return only OPEN calls
+        :param frm: 0=most recent logged call, ... 10=10th oldest call from present etc.
+        :param limit: limit returned results
+        :return: list of dicts for each call
+        e.g. [{'duebytime': '-1', 'subject': 'Smartcard Request [Lorenzo Access ]',
+        'createdby': 'Yasmin Daniels', 'requester': 'Harriet Barnard', 'PRIORITY': None, 'workorderid': '184699',
+        'isoverdue': 'false', 'status': 'Open', 'TECHNICIAN': None, 'createdtime': '1465832199994'}, ...]
+        """
+        # api = API(os.environ['SDPLUS_ADMIN'], 'http://sdplus/sdpapi/request/')
+        fields = {'from': frm, 'limit': limit, 'filterby': filter_by}
+        calls_from_sdplus = self.send('request/', 'GET_REQUESTS', fields, bypass=True)
+        calls_from_sdplus = self.output_params_to_list(calls_from_sdplus)
+        for call in calls_from_sdplus:
+            call['createdtime'] = self.epoch_to_datetime(call['createdtime'])
+        return calls_from_sdplus
 
-def eg_get_all_conversation_detail(sdplus_ref):
-    """
-    ***Don't use - instead use eg_get_all_conversations()***
-    Gets all conversation items and their details from an sdplus call (usually incoming email)
-    Combines GET_CONVERSATIONS and GET_CONVERSATION commands.
-    :param sdplus_ref: sdplus reference number
-    :return: list of dicts e.g. [{'description': 'To r...',  'toaddress': '..', 'title': 'FW: Helpdesk ...
-             note: description will be in html
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    conversations = api.send(sdplus_ref + '/conversation', 'GET_CONVERSATIONS', bypass=True)
-    conversations = api.output_params_to_list(conversations)
-    full_detail = []
-    for conversation in conversations:
-        one_detail = api.send(sdplus_ref + '/conversation/' + conversation['conversationid'], 'GET_CONVERSATION',
-                              bypass=True)
-        one_detail = api.output_params_to_list(one_detail)
-        full_detail.append(one_detail[0])
-    return full_detail
+    def request_get_notification(self, request_id, notification_id):
+        return self.send('request/' + request_id + '/notification/' + notification_id, 'GET_NOTIFICATION', bypass=True)
 
+    def request_get_notifications(self, request_id):
+        return self.send('request/' + request_id + '/notification/', 'GET_NOTIFICATIONS', bypass=True)
 
-def eg_add_attachment():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('137216/attachment', 'ADD_ATTACHMENT', attachment=r'C:\Users\nbf1707\Desktop\test.txt')
-    print(result)
+    def request_get_all_conversations(self, request_id):
+        all_conversations = self.send('request/' + request_id + '/allconversation/', 'GET_ALL_CONVERSATIONS', bypass=True)
+        all_conversations = self.output_params_to_list(all_conversations)
+        for conversation in all_conversations:
+            conversation['createddate'] = self.epoch_to_datetime(conversation['createddate'])
+        return all_conversations
 
+    def request_get_request_filters(self):
+        # WARNING: request_get_request_filters() DOESN'T RETURN ALL FILTERS! EXCELLENT(!) API BROKEN.
+        return self.send('request/', 'GET_REQUEST_FILTERS', bypass=True)
 
-# eg_adding_resolution
-# eg_edit_resolution
-# eg_get_resolution
-# eg_pickup_request
+    # Notes Related Operations
+    def note_add(self, request_id, is_public='False', text=''):
+        fields = {'isPublic': is_public, 'notesText': text}
+        return self.send('request/' + request_id + '/notes', 'ADD_NOTE', fields, sub_elements=['Notes', 'Note'])
 
-def eg_assign_request():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'technicianid': '25261'}  # 25261 = Simon Crouch
-    result = api.send('165741', 'ASSIGN_REQUEST', fields)
-    print(result)
+    def note_edit(self, request_id, note_id, text=''):
+        return self.send('request/' + request_id + '/notes/' + note_id, 'EDIT_NOTE', {'notesText': text},
+                         sub_elements=['Notes', 'Note'])
 
+    def note_view(self, request_id, note_id):
+        return self.send('request/' + request_id + '/notes/' + note_id, 'GET_NOTE')
 
-def eg_assign_request_name(full_name, sdplus_ref):
-    """
-    Assigns a call to a person by full name
-    :param full_name: Simon Crouch
-    :param sdplus_ref: 1851234
-    :return: -
-    """
-    names = eg_get_all_technicians()
-    id = names.get(full_name)
-    if not id:
-        raise LookupError('full_name not found')
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'technicianid': id}
-    result = api.send(sdplus_ref, 'ASSIGN_REQUEST', fields)
-    print(result)
+    def note_view_all(self, request_id):
+        return self.send('request/' + request_id + '/notes/', 'GET_NOTES')
 
+    def note_delete(self, request_id, note_id):
+        return self.send('request/' + request_id + '/notes/' + note_id, 'DELETE_NOTE')
 
-def eg_reply():
-    """
-    Uses Manage Engine to send an email to the To recipient, then places against the call as a conversation
-    :return:
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'to': 'simon.crouch@nbt.nhs.uk', 'cc': 'simoncrouch@nhs.net', 'subject': 'subj test',
-              'description': 'd test'}
-    result = api.send('197019', 'REPLY_REQUEST', fields, bypass=True)
-    print(result)
+    # Technician Operations
+    def technician_get_all(self, site_name='', group_id=''):
+        fields = {'siteName': site_name, 'groupid': group_id}
+        people_raw = self.send('technician/', 'GET_ALL', fields, bypass=True)
+        people = {}
+        for record in people_raw['API']['response']['operation']['Details']['record']:
+            people[record['parameter'][1]['value']] = record['parameter'][0]['value']
+        return people
 
+    # Custom API Calls
+    def request_assign_name(self, full_name, request_id):
+        """
+        Assigns a call to a person by full name
+        :param full_name: Simon Crouch
+        :param request_id: 1851234
+        :return: -
+        """
+        names = self.technician_get_all()
+        technician_id = names.get(full_name)
+        return self.request_assign(request_id, technician_id)
 
-def eg_get_requests(limit='25', frm='0', filter_by='All_Requests'):
-    """
-    Get all call details from sdplus - works by returning MOST RECENT calls first
-    :param frm: 0=most recent logged call, ... 10=10th oldest call from present etc.
-    :param limit: limit returned results
-    :return: list of dicts for each call
-    e.g. [{'duebytime': '-1', 'subject': 'Smartcard Request [Lorenzo Access ]',
-    'createdby': 'Yasmin Daniels', 'requester': 'Harriet Barnard', 'PRIORITY': None, 'workorderid': '184699',
-    'isoverdue': 'false', 'status': 'Open', 'TECHNICIAN': None, 'createdtime': '1465832199994'}, ...]
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'from': frm, 'limit': limit, 'filterby': filter_by}
-    calls_from_sdplus = api.send('', 'GET_REQUESTS', fields, bypass=True)
-    return api.output_params_to_list(calls_from_sdplus)
+    def get_queue_ids(self, queue_name_list: list):
+        """
+        WARNING: request_get_request_filters() DOESN'T RETURN ALL FILTERS! EXCELLENT(!) API BROKEN.
+        Takes in a list of displayed queue names and returns a list of dicts with queue name, id
+        :param queue_name_list: [displayed queue names]
+        :return: [{'name': 'displayed queue name', 'id': 'queue id in sdplus'}, ...]
+        """
+        filters = self.request_get_request_filters()
+        sdplus_queue_value_name = filters['operation']['Details']['Filters']['parameter']  # value=display, name=id
+        queues_all = []
+        queue = {}
+        for queue_name in queue_name_list:
+            queue['name'] = queue_name
+            for sdplus_queue in sdplus_queue_value_name:
+                if sdplus_queue['value'] == queue_name:
+                    queue_id = queue.copy()
+                    queue_id['id'] = sdplus_queue['name']
+                    queues_all.append(queue_id)
+        return queues_all
 
-
-def eg_get_notification():
-    """
-    Gets the notification item contents (usually outgoing email) from sdplus ref and notification id
-    :return: list of dicts e.g.
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('196392/notification/848547', 'GET_NOTIFICATION', bypass=True)
-    # print(result)
-    print(api.output_params_to_list(result))
-
-
-def eg_get_notifications():
-    """
-    Get replies to the customer from a resolver or sdplus automated email
-    :return: list of dicts e.g. [{'type': 'Notification', 'subtype': 'REQ_IN_QUEUE', 'notifyid': '848547',
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('196392/notification/', 'GET_NOTIFICATIONS', bypass=True)
-    # print(result)
-    print(api.output_params_to_list(result))
-
-
-def eg_get_all_conversations():
-    """
-    Gets all incoming and outgoing communications for a call, with their contents
-    :return: list of dicts e.g. [{'from': 'System', 'description': '<font face= ...
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('196392/allconversation/', 'GET_ALL_CONVERSATIONS', bypass=True)
-    # print(result)
-    return api.output_params_to_list(result)
-
-
-def eg_get_request_filters():
-    """
-    Gets all the request View Menu items - e.g. "Back Office Third Party/CSC"
-    or {'name': '131707_MyView', 'value': 'Projects - Paper Light'},
-    :return: list of dicts
-    """
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    result = api.send('', 'GET_REQUEST_FILTERS', bypass=True)
-    print(result)
-
-
-def eg_add_note():
-    api = API(os.environ['SDPLUS_API_KEY'], 'http://sdplus/sdpapi/request/')
-    fields = {'isPublic': 'false', 'notesText': 'Simon Crouch: Logged to CSC'}
-    result = api.send('165741/notes', 'ADD_NOTE', fields, sub_elements=['Notes', 'Note'])
-    print(result)
-
-
-def eg_get_all_technicians():
-    """
-    Returns all IDs and technicians
-    :return: {'full name': id, 'full name': id, ...}
-    """
-    api = API(os.environ['SLACK_SIMONC'], 'http://sdplus/sdpapi/technician/')
-    fields = {'siteName': '', 'groupid': ''}
-    peoples = api.send('', 'GET_ALL', fields, bypass=True)
-
-    people = {}
-    for record in peoples['API']['response']['operation']['Details']['record']:
-        people[record['parameter'][1]['value']] = record['parameter'][0]['value']
-    return people
+    @staticmethod
+    def epoch_to_datetime(epoch):
+        return datetime.datetime.fromtimestamp(float(epoch) / 1000)
